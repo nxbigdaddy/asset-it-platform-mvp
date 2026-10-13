@@ -1,0 +1,14 @@
+node_modules
+dist
+web/dist
+.git
+.env
+.env.*
+*.db
+*.db-journal
+prisma/test-integration.sqlite
+uploads
+.cursor
+terminals
+*.md
+!README.md

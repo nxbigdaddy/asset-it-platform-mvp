@@ -1,0 +1,679 @@
+// 制造型企业固定资产与 IT 一体化 — 数据模型（Prisma）
+// 主数据：分类、编码、位置、状态机、组织/分配（企业微信 ID 映射）
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// 资产财务状态（生命周期）
+enum AssetStatus {
+  PLANNED /// 计划采购
+  IN_TRANSIT /// 在途
+  PENDING_CAPITALIZATION /// 验收待转固
+  IN_USE /// 在用
+  IDLE /// 闲置
+  SEALED /// 封存
+  UNDER_REPAIR /// 维修中
+  PENDING_DISPOSAL /// 待报废
+  DISPOSED /// 已处置
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  RETURNED
+  CANCELLED
+}
+
+enum IpAddressStatus {
+  PLANNED /// 规划预留
+  ALLOCATED /// 已分配
+  FREE /// 空闲
+  RESERVED /// 保留（网关/广播等）
+}
+
+enum SubnetPurpose {
+  OFFICE
+  PRODUCTION
+  SERVER
+  MANAGEMENT
+  GUEST
+  OTHER
+}
+
+enum ErpSyncDirection {
+  OUTBOUND_TO_ERP
+  INBOUND_FROM_ERP
+}
+
+enum ErpEntityType {
+  ASSET_CARD
+  DEPRECIATION_RUN
+  TRANSFER
+  DISPOSAL
+  CAPITALIZATION
+}
+
+enum TransferOrderStatus {
+  DRAFT
+  PENDING
+  REJECTED
+  COMPLETED
+}
+
+enum DisposalOrderStatus {
+  DRAFT
+  PENDING
+  REJECTED
+  COMPLETED
+}
+
+enum DisposalType {
+  SCRAP
+  SALE
+  DONATE
+}
+
+enum InventoryTaskStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum ExportJobStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+}
+
+enum ExportJobType {
+  ASSET_CSV
+  AUDIT_CSV
+}
+
+/// 资产分类树
+model AssetCategory {
+  id          String          @id @default(cuid())
+  code        String          @unique
+  name        String
+  parentId    String?
+  parent      AssetCategory?  @relation("CatTree", fields: [parentId], references: [id])
+  children    AssetCategory[] @relation("CatTree")
+  sortOrder   Int             @default(0)
+  /// IT 子类示例：NB/DT/SRV
+  typeCode    String?
+  assets      Asset[]
+  policies    NamingPolicy[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+/// 位置树：厂区 → 车间 → 产线/工位/机房
+model Location {
+  id        String     @id @default(cuid())
+  code      String     @unique
+  name      String
+  parentId  String?
+  parent    Location?  @relation("LocTree", fields: [parentId], references: [id])
+  children  Location[] @relation("LocTree")
+  sortOrder Int        @default(0)
+  assets    Asset[]
+  transfersFrom TransferOrder[] @relation("TransferFromLoc")
+  transfersTo   TransferOrder[] @relation("TransferToLoc")
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model CostCenter {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  assets    Asset[]
+  createdAt DateTime @default(now())
+}
+
+model LedgerBook {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  assets    Asset[]
+  createdAt DateTime @default(now())
+}
+
+/// 企业微信部门镜像
+model WxDepartment {
+  id         String           @id
+  name       String
+  /// 用于主机名等：部门缩写，如 FIN、MFG
+  shortCode  String?
+  parentId   String?
+  parent     WxDepartment?    @relation("WxDeptTree", fields: [parentId], references: [id])
+  children   WxDepartment[]   @relation("WxDeptTree")
+  order      Int              @default(0)
+  lastSyncAt DateTime?
+  assetsOrg  Asset[]          @relation("AssetOrgUnit")
+  transfersFrom TransferOrder[] @relation("TransferFromOrg")
+  transfersTo   TransferOrder[] @relation("TransferToOrg")
+  users      WxUserDepartment[]
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+}
+
+/// 企业微信成员镜像
+model WxUser {
+  id            String             @id @default(cuid())
+  userid        String             @unique
+  name          String
+  mobile        String?
+  email         String?
+  position      String?
+  active        Boolean            @default(true)
+  lastSyncAt    DateTime?
+  departments   WxUserDepartment[]
+  assignments   AssetAssignment[]
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+}
+
+model WxUserDepartment {
+  userId       String
+  departmentId String
+  isLeader     Boolean      @default(false)
+  order        Int          @default(0)
+  user         WxUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department   WxDepartment @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@id([userId, departmentId])
+}
+
+/// 固定资产 / IT 统一卡片
+model Asset {
+  id                    String            @id @default(cuid())
+  assetNo               String            @unique
+  name                  String
+  categoryId            String
+  category              AssetCategory     @relation(fields: [categoryId], references: [id])
+  locationId            String?
+  location              Location?         @relation(fields: [locationId], references: [id])
+  status                AssetStatus       @default(PENDING_CAPITALIZATION)
+  /// 组织归属：企业微信部门
+  orgUnitId             String?
+  orgUnit               WxDepartment?     @relation("AssetOrgUnit", fields: [orgUnitId], references: [id])
+  costCenterId          String?
+  costCenter            CostCenter?       @relation(fields: [costCenterId], references: [id])
+  ledgerBookId          String?
+  ledgerBook            LedgerBook?       @relation(fields: [ledgerBookId], references: [id])
+  /// IT / 通用
+  brand                 String?
+  model                 String?
+  serialNo              String?
+  hostnameGenerated     String?
+  namingPolicyId        String?
+  namingPolicy          NamingPolicy?     @relation(fields: [namingPolicyId], references: [id])
+  /// 财务（可与 ERP 对账）
+  originalValue         Decimal?
+  salvageValue          Decimal?
+  depreciationMonths    Int?
+  inServiceDate         DateTime?
+  remarks               String?
+  /// 扩展字段：键为 AssetFieldDefinition.key，值类型与 fieldType 一致
+  customFieldsJson      Json?
+  assignments           AssetAssignment[]
+  ipBindings            AssetIpBinding[]
+  erpRefs               ErpAssetRef[]
+  transferOrders        TransferOrder[]
+  disposalOrders        DisposalOrder[]
+  inventoryLines        InventoryLine[]
+  softwareLicenses      SoftwareLicense[]
+  procurementRequests ProcurementRequest[]
+  ipAllocationLogs      IpAllocationLog[]
+  moldAssets            MoldAsset[]
+  maintenanceRecords    MaintenanceRecord[]
+  attachments           AssetAttachment[]
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  @@index([orgUnitId])
+  @@index([status])
+}
+
+/// 资产卡片扩展字段定义（管理员配置）
+model AssetFieldDefinition {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  label       String
+  /// STRING | NUMBER | DATE | BOOLEAN | SELECT
+  fieldType   String
+  /// SELECT 时存 JSON 数组字符串，如 ["A","B"]
+  optionsJson String?
+  required    Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// 人员分配（一人多机）
+model AssetAssignment {
+  id          String            @id @default(cuid())
+  assetId     String
+  asset       Asset             @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  wxUserId    String
+  wxUser      WxUser            @relation(fields: [wxUserId], references: [id])
+  status      AssignmentStatus  @default(ACTIVE)
+  purpose     String?
+  assignedAt  DateTime          @default(now())
+  expectedReturnAt DateTime?
+  returnedAt  DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([assetId, status])
+  @@index([wxUserId, status])
+}
+
+/// 命名策略
+model NamingPolicy {
+  id          String          @id @default(cuid())
+  name        String
+  /// 模板如 {site}-{dept}-{type}-{seq:4}
+  template    String
+  /// 序号作用域：GLOBAL | SITE | ORG_UNIT | CATEGORY 等
+  scopeType   String
+  categoryId  String?
+  category    AssetCategory?  @relation(fields: [categoryId], references: [id])
+  siteCode    String?
+  isDefault   Boolean         @default(false)
+  assets      Asset[]
+  sequences   NamingSequence[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+model NamingSequence {
+  id         String       @id @default(cuid())
+  policyId   String
+  policy     NamingPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  scopeKey   String
+  lastValue  Int          @default(0)
+
+  @@unique([policyId, scopeKey])
+}
+
+/// IPAM：网段
+model Subnet {
+  id        String        @id @default(cuid())
+  cidr      String        @unique
+  vlanId    String?
+  purpose   SubnetPurpose @default(OTHER)
+  gateway   String?
+  dns       String?
+  note      String?
+  addresses IpAddress[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+/// 单 IP 记录
+model IpAddress {
+  id        String          @id @default(cuid())
+  subnetId  String
+  subnet    Subnet          @relation(fields: [subnetId], references: [id], onDelete: Cascade)
+  address   String
+  status    IpAddressStatus @default(FREE)
+  note      String?
+  bindings  AssetIpBinding[]
+  allocationLogs IpAllocationLog[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@unique([subnetId, address])
+  @@index([status])
+}
+
+/// 资产与 IP 绑定（多网卡）
+model AssetIpBinding {
+  id          String     @id @default(cuid())
+  assetId     String
+  asset       Asset      @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  ipAddressId String
+  ipAddress   IpAddress  @relation(fields: [ipAddressId], references: [id], onDelete: Cascade)
+  /// mgmt / data / ilo 等
+  role        String     @default("data")
+  macAddress  String?
+  createdAt   DateTime   @default(now())
+
+  @@unique([assetId, ipAddressId])
+  @@index([ipAddressId])
+}
+
+/// ERP 侧资产主键映射（财务真相源在 ERP 时）
+model ErpAssetRef {
+  id         String   @id @default(cuid())
+  assetId    String
+  asset      Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  erpAssetId String
+  erpBook    String   @default("DEFAULT")
+  createdAt  DateTime @default(now())
+
+  @@unique([assetId, erpBook])
+}
+
+model ErpSyncQueue {
+  id         String           @id @default(cuid())
+  entityType ErpEntityType
+  entityId   String
+  payload    String
+  direction  ErpSyncDirection
+  status     String           @default("PENDING")
+  lastError  String?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([status, createdAt])
+}
+
+/// 资产调拨单
+model TransferOrder {
+  id               String              @id @default(cuid())
+  orderNo          String              @unique
+  assetId          String
+  asset            Asset               @relation(fields: [assetId], references: [id])
+  fromOrgUnitId    String?
+  fromOrgUnit      WxDepartment?       @relation("TransferFromOrg", fields: [fromOrgUnitId], references: [id])
+  toOrgUnitId      String?
+  toOrgUnit        WxDepartment?       @relation("TransferToOrg", fields: [toOrgUnitId], references: [id])
+  fromLocationId   String?
+  fromLocation     Location?           @relation("TransferFromLoc", fields: [fromLocationId], references: [id])
+  toLocationId     String?
+  toLocation       Location?           @relation("TransferToLoc", fields: [toLocationId], references: [id])
+  status           TransferOrderStatus @default(DRAFT)
+  remark           String?
+  applicantUserId  String?
+  applicant        User?               @relation("TransferApplicant", fields: [applicantUserId], references: [id])
+  /// 已通过审批次数；多级时未达配置步数则仍为 PENDING
+  approvalStep     Int                 @default(0)
+  rejectedReason   String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([status])
+  @@index([assetId])
+}
+
+/// 资产处置单
+model DisposalOrder {
+  id              String              @id @default(cuid())
+  orderNo         String              @unique
+  assetId         String
+  asset           Asset               @relation(fields: [assetId], references: [id])
+  disposalType    DisposalType
+  status          DisposalOrderStatus @default(DRAFT)
+  reason          String?
+  applicantUserId String?
+  applicant       User?               @relation("DisposalApplicant", fields: [applicantUserId], references: [id])
+  approvalStep    Int                 @default(0)
+  rejectedReason  String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([status])
+  @@index([assetId])
+}
+
+/// 盘点任务
+model InventoryTask {
+  id             String              @id @default(cuid())
+  taskNo         String              @unique
+  name           String
+  status         InventoryTaskStatus @default(PLANNED)
+  plannedDate    DateTime?
+  scopeOrgUnitId String?
+  notes          String?
+  lines          InventoryLine[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([status])
+}
+
+model InventoryLine {
+  id               String          @id @default(cuid())
+  taskId           String
+  task             InventoryTask   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  assetId          String
+  asset            Asset           @relation(fields: [assetId], references: [id])
+  bookQty          Int             @default(1)
+  actualQty        Int?
+  varianceReason   String?
+  countedAt        DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@unique([taskId, assetId])
+  @@index([taskId])
+}
+
+model SoftwareLicense {
+  id         String    @id @default(cuid())
+  name       String
+  vendor     String?
+  totalSeats Int       @default(0)
+  usedSeats  Int       @default(0)
+  expireAt   DateTime?
+  assetId    String?
+  asset      Asset?    @relation(fields: [assetId], references: [id])
+  note       String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model ProcurementRequest {
+  id             String    @id @default(cuid())
+  requestNo      String    @unique
+  title          String
+  status         String    @default("PENDING_ACCEPTANCE")
+  expectedAmount Decimal?
+  remark         String?
+  relatedAssetId String?
+  asset          Asset?    @relation(fields: [relatedAssetId], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model DepreciationRun {
+  id          String    @id @default(cuid())
+  period      String    @unique
+  status      String    @default("DRAFT")
+  totalAmount Decimal?
+  assetCount  Int       @default(0)
+  runAt       DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model IpAllocationLog {
+  id          String    @id @default(cuid())
+  assetId     String
+  asset       Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  ipAddressId String
+  ipAddress   IpAddress @relation(fields: [ipAddressId], references: [id], onDelete: Cascade)
+  action      String
+  actorUserId String?
+  createdAt   DateTime  @default(now())
+
+  @@index([createdAt])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  note      String?
+  updatedAt DateTime @updatedAt
+}
+
+model MoldAsset {
+  id        String   @id @default(cuid())
+  assetId   String
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  moldCode  String
+  maxLife   Int      @default(0)
+  usedCount Int      @default(0)
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([assetId])
+}
+
+model MaintenanceRecord {
+  id          String    @id @default(cuid())
+  assetId     String
+  asset       Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  nextDue     DateTime?
+  lastService DateTime?
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([assetId])
+}
+
+/// 资产附件（本地磁盘存储，路径见 storedName）
+model AssetAttachment {
+  id           String   @id @default(cuid())
+  assetId      String
+  asset        Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  storedName   String
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  @@index([assetId])
+}
+
+model ExportJob {
+  id          String          @id @default(cuid())
+  type        ExportJobType
+  status      ExportJobStatus @default(PENDING)
+  filePath    String?
+  fileName    String?
+  rowCount    Int?
+  lastError   String?
+  createdById String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  completedAt DateTime?
+
+  @@index([status, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  entityType String
+  entityId   String
+  action     String
+  actor      String?
+  detail     String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+}
+
+/// 后台登录用户（与「企业微信成员」无关）
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  displayName  String?
+  role         String   @default("admin")
+  isActive     Boolean  @default(true)
+  /// JSON 数组：可见的企微部门 id；空或 null 表示不按部门限制（管理员仍全量）
+  orgScopeJson String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  transferApplications TransferOrder[] @relation("TransferApplicant")
+  disposalApplications DisposalOrder[] @relation("DisposalApplicant")
+}
+
+model SyncJobState {
+  id           String   @id
+  lastRunAt    DateTime?
+  lastSuccessAt DateTime?
+  lastError    String?
+}
+
+// —— 服务器管理（多角色纳管）——
+
+enum ManagedServerOsType {
+  WINDOWS
+  LINUX
+  OTHER
+}
+
+enum ServerRoleKind {
+  AD
+  PRINT
+  FILE_SHARE
+  WEB
+  DATABASE
+}
+
+enum ServerCredentialAuthType {
+  PASSWORD
+  KEY
+}
+
+model ManagedServer {
+  id           String              @id @default(cuid())
+  name         String
+  host         String
+  osType       ManagedServerOsType @default(OTHER)
+  description  String?
+  environment  String?
+  enabled      Boolean             @default(true)
+  lastProbeAt  DateTime?
+  lastProbeOk  Boolean?
+  lastProbeMsg String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  credential   ServerCredential?
+  roleBindings ServerRoleBinding[]
+}
+
+model ServerCredential {
+  id         String                   @id @default(cuid())
+  serverId   String                   @unique
+  server     ManagedServer            @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  authType   ServerCredentialAuthType @default(PASSWORD)
+  /// 演示环境可存连接串；生产应加密或 KMS
+  secretEnc  String
+  username   String?
+  keyComment String?
+  updatedAt  DateTime                 @updatedAt
+}
+
+model ServerRoleBinding {
+  id              String         @id @default(cuid())
+  serverId        String
+  server          ManagedServer  @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  role            ServerRoleKind
+  isPrimary       Boolean        @default(false)
+  configJson      String         @default("{}")
+  allowWrite      Boolean        @default(false)
+  allowAutomation Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@unique([serverId, role])
+  @@index([serverId])
+}

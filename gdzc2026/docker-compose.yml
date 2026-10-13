@@ -1,0 +1,29 @@
+# 用法（在 Linux 服务器上，需已安装 Docker 与 Compose 插件）：
+# 1. 将项目目录放到服务器（git clone / scp / rsync，见 scripts/pack-and-upload.ps1）
+# 2. 在服务器项目根目录：复制 .env.example 为 .env，至少设置 JWT_SECRET（勿提交 .env）
+# 3. docker compose up -d --build
+# 4. docker compose exec app npx tsx prisma/seed.ts   # 首次初始化管理员等
+# 5. 浏览器访问 http://服务器IP:3000
+#
+# SQLite 数据持久化在 Docker 卷 gdzc-data（挂载为容器内 /app/data）。
+# 切勿在聊天中发送 SSH 密码；优先使用密钥登录。
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      DATABASE_PROVIDER: sqlite
+      # 与 Dockerfile 中数据卷一致；勿改为 file:./dev.db
+      DATABASE_URL: file:/app/data/gdzc.db
+      JWT_SECRET: ${JWT_SECRET:-please-change-in-production}
+    volumes:
+      - gdzc-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  gdzc-data:

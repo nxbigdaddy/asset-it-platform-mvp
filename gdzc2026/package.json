@@ -1,0 +1,53 @@
+{
+  "name": "gdzc-asset-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev:api\" \"npm run dev:web:delayed\"",
+    "dev:open": "concurrently -n api,web,open -c blue,magenta,green \"npm run dev:api\" \"npm run dev:web:delayed\" \"wait-on http://127.0.0.1:5173 && node scripts/open-dev-login.mjs\"",
+    "dev:api": "tsx watch src/index.ts",
+    "dev:web": "npm run dev --workspace=web",
+    "dev:web:delayed": "wait-on tcp:127.0.0.1:3000 && npm run dev:web",
+    "build": "tsc && npm run build --workspace=web",
+    "start": "node dist/index.js",
+    "db:create": "node scripts/create-mssql-databases.mjs",
+    "db:generate": "node scripts/set-prisma-provider.mjs && prisma generate",
+    "db:push": "node scripts/set-prisma-provider.mjs && prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "test": "tsx --test tests/integration/api.test.ts",
+    "test:all": "npm run build && npm test",
+    "test:wework": "node scripts/test-wework-connection.mjs",
+    "wx:pull": "tsx scripts/pull-wx-addressbook.mjs"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fastify/multipart": "^9.4.0",
+    "@fastify/static": "^8.0.0",
+    "@prisma/client": "^6.5.0",
+    "bcryptjs": "^2.4.3",
+    "fastify": "^5.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "ldapts": "^8.1.7",
+    "xlsx": "^0.18.5",
+    "zod": "^3.24.2"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^22.13.10",
+    "concurrently": "^9.1.2",
+    "mssql": "^11.0.1",
+    "prisma": "^6.5.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "wait-on": "^8.0.1"
+  }
+}
